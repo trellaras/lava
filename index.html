@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Moving Metaballs - JohnKaL</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+    <style>
+        body { background-color: #000; margin: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <script type="text/javascript">
+        async function main() {
+            let pyodide = await loadPyodide();
+            const pythonCode = `
+import math
+import random
+from js import document, window
+
+class Ball:
+    def __init__(self, x, y, size):
+        self.pos = complex(x, y)
+        # Random movement speed
+        self.vel = complex(random.uniform(-2, 2), random.uniform(-2, 2))
+        self.size = size
+        self.pos0 = 0j
+        self.edgePos = 0j
+        self.tracking = True
+
+    def move(self, width, height):
+        self.pos += self.vel
+        # Bounce off edges
+        if self.pos.real < 50 or self.pos.real > width - 50:
+            self.vel = complex(-self.vel.real, self.vel.imag)
+        if self.pos.imag < 50 or self.pos.imag > height - 50:
+            self.vel = complex(self.vel.real, -self.vel.imag)
+
+class MetaballSystem:
+    def __init__(self, balls, goo, threshold):
+        self.balls = balls
+        self.goo = goo
+        self.threshold = threshold
+        self.minSize = min([ball.size for ball in balls])
+
+    def calcForce(self, pos):
+        force = 0
+        for ball in self.balls:
+            dist_sq = (ball.pos.real - pos.real)**2 + (ball.pos.imag - pos.imag)**2
+            if dist_sq == 0: return 10000
+            force += ball.size / (dist_sq**(self.goo/2))
+        return force
+
+    def calcNormal(self, pos):
+        np = 0j
+        for ball in self.balls:
+            dist = abs(ball.pos - pos)
+            if dist == 0: continue
+            div = dist**(2 + self.goo)
+            np += -self.goo * ball.size * (ball.pos - pos) / div
+        return np / abs(np) if abs(np) != 0 else 1j
+
+    def calcTangent(self, pos):
+        np = self.calcNormal(pos)
+        return complex(-np.imag, np.real)
+
+    def stepOnceTowardsBorder(self, pos):
+        force = self.calcForce(pos)
+        np = self.calcNormal(pos)
+        # Prevent math errors if force is 0
+        if force < 1e-9: return (pos, force)
+        stepsize = (self.minSize / self.threshold)**(1 / self.goo) - \
+                   (self.minSize / force)**(1 / self.goo) + 0.01
+        return (pos + np * stepsize, force)
+
+    def trackTheBorder(self, pos):
+        force = 9999999
+        tries = 0
+        while force > self.threshold and tries < 10:
+            pos, force = self.stepOnceTowardsBorder(pos)
+            tries += 1
+        return pos
+
+def rungeKutta2(pos, h, func):
+    return pos + h * func(pos + func(pos) * h / 2)
+
+# Setup
+canvas = document.getElementById("canvas")
+ctx = canvas.getContext("2d")
+w = window.innerWidth
+h = window.innerHeight
+canvas.width = w
+canvas.height = h
+
+balls = [Ball(random.randint(100, w-100), random.randint(100, h-100), random.randint(3, 6)) for _ in range(5)]
+mbs = MetaballSystem(balls, goo=2.0, threshold=0.0004)
+
+def update_and_draw(mouse_x, mouse_y):
+    ctx.fillStyle = "rgba(0, 0, 0, 0.3)" # Fade effect
+    ctx.fillRect(0, 0, w, h)
+    
+    # First ball follows mouse, others move alone
+    balls[0].pos = complex(mouse_x, mouse_y)
+    for b in balls[1:]:
+        b.move(w, h)
+    
+    step = 18
+    ctx.strokeStyle = "#00d2ff"
+    ctx.lineWidth = 3
+    
+    for ball in balls:
+        ball.pos0 = mbs.trackTheBorder(ball.pos + (ball.size * 10 * 1j))
+        ball.edgePos = ball.pos0
+        ball.tracking = True
+
+    loopIndex = 0
+    # Limit loop to prevent freezing
+    while loopIndex < 100:
+        loopIndex += 1
+        any_tracking = False
+        for ball in balls:
+            if not ball.tracking: continue
+            any_tracking = True
+            
+            old_pos = ball.edgePos
+            ball.edgePos = rungeKutta2(ball.edgePos, step, mbs.calcTangent)
+            ball.edgePos, _ = mbs.stepOnceTowardsBorder(ball.edgePos)
+
+            ctx.beginPath()
+            ctx.moveTo(old_pos.real, old_pos.imag)
+            ctx.lineTo(ball.edgePos.real, ball.edgePos.imag)
+            ctx.stroke()
+
+            for ob in balls:
+                if (ob is not ball or loopIndex > 5) and abs(ob.pos0 - ball.edgePos) < step * 1.2:
+                    ball.tracking = False
+        if not any_tracking: break
+`;
+
+            await pyodide.runPythonAsync(pythonCode);
+            const update = pyodide.globals.get('update_and_draw');
+
+            let mouseX = 400, mouseY = 300;
+            window.addEventListener('mousemove', (e) => {
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+
+            function tick() {
+                update(mouseX, mouseY);
+                requestAnimationFrame(tick);
+            }
+            tick();
+        }
+        main();
+    </script>
+</body>
+</html>
